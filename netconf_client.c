@@ -4,11 +4,41 @@
 #include <libyang/libyang.h>
 
 #define CALLHOME_TIMEOUT -1
+#define NC_SSH_KNOWNHOSTS_SKIP 4
+#define MODULES_DIR "/home/nr5glab/test/netconf_test/modules"
 
 void print_error(struct nc_session *session) {
     const char *message, *message2, *severity;
     nc_err_get_msg(session, &message, &message2, &severity);
     printf("Error: %s %s %s\n", message, message2, severity);
+}
+
+static void *call_home_thread(void *arg){
+	struct nc_session *session = NULL;
+	
+	// Skip all hostkey and known_hosts check
+	nc_client_set_knownhosts_mode(NC_SSH_KNOWNHOSTS_SKIP);
+	
+	// Set directory to where to search for modules
+	int ret = nc_client_set_schema(MODULES_DIR);
+
+	// Set SSH username for callhome
+	ret = nc_client_ssh_ch_set_username("root");
+
+	// Add clients key pair
+	ret = nc_client_ssh_ch_add_keypair("/home/nr5glab/.ssh/id_rsa.pub", "/home/nr5glab/.ssh/id_rsa");
+
+	// Add callhome bind
+	ret = nc_client_ssh_ch_add_bind("127.0.0.1",10009);
+
+	// Callhome connect
+	ret = nc_accept_callhome(CALLHOME_TIMEOUT, NULL, &session);
+
+	if(ret == 1)printf("Callhome successfull\n");
+
+	ret = nc_client_ssh_ch_del_bind("127.0.0.1", 10009);
+
+	nc_session_free(session, NULL);
 }
 
 int main() {
@@ -32,7 +62,7 @@ int main() {
     int ret = nc_client_ssh_set_username(username);
 
     // Accept callhome message from RU
-    // nc_accept_callhome(CALLHOME_TIMEOUT, NULL, &session);
+    ret = nc_accept_callhome(CALLHOME_TIMEOUT, NULL, &session);
     // Create and configure the session
     session = nc_connect_ssh(host, port, ctx);
     if (!session) {
