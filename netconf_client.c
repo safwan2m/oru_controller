@@ -3,9 +3,8 @@
 #include <libnetconf2/session_client.h>
 #include <libyang/libyang.h>
 
-#define CALLHOME_TIMEOUT -1
-#define NC_SSH_KNOWNHOSTS_SKIP 4
-#define MODULES_DIR "/home/nr5glab/test/netconf_test/modules"
+#define NC_PORT_CH_SSH 4334
+#define CLI_CH_TIMEOUT -1
 
 void print_error(struct nc_session *session) {
     const char *message, *message2, *severity;
@@ -15,33 +14,41 @@ void print_error(struct nc_session *session) {
 
 static void *call_home_thread(void *arg){
 	struct nc_session *session = NULL;
-	
-	// Skip all hostkey and known_hosts check
-	nc_client_set_knownhosts_mode(NC_SSH_KNOWNHOSTS_SKIP);
-	
-	// Set directory to where to search for modules
-	int ret = nc_client_set_schema(MODULES_DIR);
+	char *username = "oranuser";
+	int timeout, port = 4334;
 
-	// Set SSH username for callhome
-	ret = nc_client_ssh_ch_set_username("root");
+        /* default hostname */
+        char *host = "::0";
 
-	// Add clients key pair
-	ret = nc_client_ssh_ch_add_keypair("/home/nr5glab/.ssh/id_rsa.pub", "/home/nr5glab/.ssh/id_rsa");
 
-	// Add callhome bind
-	ret = nc_client_ssh_ch_add_bind("127.0.0.1",10009);
+        /* default timeout */
+        if (!timeout) {
+            timeout = CLI_CH_TIMEOUT;
+        }
 
-	// Callhome connect
-	ret = nc_accept_callhome(CALLHOME_TIMEOUT, NULL, &session);
+        /* create the session */
+        nc_client_ssh_ch_set_username(username);
+        nc_client_ssh_ch_add_bind_listen(host, port);
+        printf("Waiting %ds for an SSH Call Home connection on port %u...\n", timeout, port);
+
+        int ret = nc_accept_callhome(timeout * 1000, NULL, &session);
+        nc_client_ssh_ch_del_bind(host, port);
+        if (ret != 1) {
+            if (ret == 0) {
+                printf("[%s] Receiving SSH Call Home on port %d as user \"%s\" timeout elapsed.", __func__, port, username);
+            } else {
+                printf("[%s] Receiving SSH Call Home on port %d as user \"%s\" failed.", __func__, port, username);
+            }
+            return EXIT_FAILURE;
+        }
 
 	if(ret == 1)printf("Callhome successfull\n");
 
-	ret = nc_client_ssh_ch_del_bind("127.0.0.1", 10009);
-
 	nc_session_free(session, NULL);
+
 }
 
-int main() {
+void *connet_thread(void *arg){
     struct nc_session *session;
     const char *host = "192.168.4.24";
     const char *username = "root"; // Replace with your username
@@ -61,8 +68,6 @@ int main() {
     // Set SSH username
     int ret = nc_client_ssh_set_username(username);
 
-    // Accept callhome message from RU
-    ret = nc_accept_callhome(CALLHOME_TIMEOUT, NULL, &session);
     // Create and configure the session
     session = nc_connect_ssh(host, port, ctx);
     if (!session) {
@@ -72,18 +77,6 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    // Authenticate the user
-    // if (nc_ssh_userauth_password(session, username, "your_password") != NC_RPL_OK) { // Replace with your password
-    //     fprintf(stderr, "Authentication failed\n");
-    //     print_error(session);
-    //     nc_session_free(session, NULL);
-    //     ly_ctx_destroy(ctx);
-    //     nc_client_destroy();
-    //     return EXIT_FAILURE;
-    // }
-
-    // Now you are connected and authenticated, you can perform NETCONF operations
-
     printf("Connected to %s:%d as %s\n", host, port, username);
 
     // Clean up and close the session
@@ -92,5 +85,10 @@ int main() {
     nc_client_destroy();
 
     return EXIT_SUCCESS;
+}
+
+int main() {
+
+	call_home_thread(NULL);
 }
 
