@@ -1,0 +1,8 @@
+<users xmlns="urn:o-ran:user-mgmt:1.0">
+    <user>
+        <name>nr5glab</name>
+        <account-type>PASSWORD</account-type>
+	<password>helloworld</password>
+        <enabled>true</enabled>
+    </user>
+</users>

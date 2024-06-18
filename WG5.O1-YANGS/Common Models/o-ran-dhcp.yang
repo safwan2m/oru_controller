@@ -13,7 +13,7 @@ module o-ran-dhcp {
 
   import ietf-dhcpv6-types {
     prefix dhcpv6-type;
-    revision-date 2018-01-30;
+    revision-date 2018-09-04;
   }
 
   organization "O-RAN Alliance";
