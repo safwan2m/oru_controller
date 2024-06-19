@@ -2,7 +2,7 @@ version: '3.8'
 services:
   test:
     container_name: "test"
-    image: test:0.0.2
+    image: test:0.0.3
     networks:
       test_net:
         ipv4_address: 192.160.40.13
