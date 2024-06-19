@@ -33,4 +33,11 @@ RUN git clone --single-branch --branch v2.1.49 https://github.com/CESNET/netopee
 
 RUN rm -rf *
 
+COPY * /root/
+
+RUN NP2_MODULE_DIR=/usr/local/share/yang/modules/netopeer2/ NP2_MODULE_PERMS=600 /usr/local/share/netopeer2/setup.sh && \
+	/usr/local/share/netopeer2/merge_hostkey.sh && \
+	/usr/local/share/netopeer2/merge_config.sh && \
+	netopeer2-server -v3 -t60
+
 CMD ["sleep", "infinity"] 
