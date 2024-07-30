@@ -35,7 +35,7 @@ static void print_val(const sr_val_t *value) {
 }
 
 int main(int argc, char **argv) {
-    char *user = "oranuser";
+    char *user = "root";
 
     // oru_cont = (oru_controller_t *)malloc(sizeof(oru_controller_t));
     
@@ -50,6 +50,8 @@ int main(int argc, char **argv) {
     if(netconf_call_home()){
 	   printf("Callhome successful for user %s\n",oru_cont.user);
     }
+
+    netconf_status();
 
     netconf_get();
     // netconf_subscribet);

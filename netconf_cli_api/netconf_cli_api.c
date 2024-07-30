@@ -108,6 +108,55 @@ int netconf_call_home()
     return EXIT_SUCCESS;
 }
 
+int netconf_status(){
+  const char *s;
+  const char * const *cpblts;
+
+  NC_TRANSPORT_IMPL transport;
+  int i;
+
+  if (!session) {
+    printf("Client is not connected to any NETCONF server.\n");
+  } else {
+    transport = nc_session_get_ti(session);
+    printf("Current NETCONF session:\n");
+    printf("  ID          : %u\n", nc_session_get_id(session));
+    switch (transport) {
+  #ifdef NC_ENABLED_SSH
+    case NC_TI_LIBSSH:
+    s = "SSH";
+    printf("  Host        : %s\n", nc_session_get_host(session));
+    printf("  Port        : %u\n", nc_session_get_port(session));
+    break;
+  #endif
+  #ifdef NC_ENABLED_TLS
+    case NC_TI_OPENSSL:
+        s = "TLS";
+        printf("  Host        : %s\n", nc_session_get_host(session));
+        printf("  Port        : %u\n", nc_session_get_port(session));
+        break;
+  #endif
+    case NC_TI_FD:
+        s = "FD";
+        break;
+    case NC_TI_UNIX:
+        s = "UNIX";
+        printf("  Path        : %s\n", nc_session_get_path(session));
+        break;
+    default:
+        s = "Unknown";
+        break;
+  }
+  printf("  Transport   : %s\n", s);
+  printf("  Capabilities:\n");
+  cpblts = nc_session_get_cpblts(session);
+    for (i = 0; cpblts[i]; ++i) {
+        printf("\t%s\n", cpblts[i]);
+    }
+  }
+
+}
+
 int netconf_get(){
     // oru_controller_t *oru_cont = (oru_controller_t *)arg;
     int c, config_fd, ret = EXIT_FAILURE, filter_param = 0, timeout = CLI_RPC_REPLY_TIMEOUT;

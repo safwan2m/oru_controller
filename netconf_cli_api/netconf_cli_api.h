@@ -39,5 +39,6 @@
 extern oru_controller_t oru_cont;
 
 int netconf_call_home();
+int netconf_status();
 int netconf_get();
 int netconf_subscribe();
