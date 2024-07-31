@@ -15,3 +15,5 @@ extern oru_controller_t oru_cont;
 int sysrepo_connect();
 
 int sysrepo_get();
+
+int sysrepo_get_data();

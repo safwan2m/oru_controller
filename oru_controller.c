@@ -54,6 +54,8 @@ int main(int argc, char **argv) {
     netconf_status();
 
     netconf_get();
+
+    netconf_subscribe();
     // netconf_subscribet);
     signal(SIGINT, sigint_handler);
     signal(SIGPIPE, SIG_IGN);

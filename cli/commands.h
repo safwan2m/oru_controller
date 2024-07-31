@@ -37,4 +37,6 @@ typedef struct {
 
 extern COMMAND commands[];
 
+int cli_send_recv(struct nc_rpc *rpc, FILE *output, NC_WD_MODE wd_mode, int timeout_s);
+
 #endif /* COMMANDS_H_ */

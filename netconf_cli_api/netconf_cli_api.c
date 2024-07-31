@@ -18,6 +18,9 @@ extern volatile int interleave;
 #define NC_CAP_NOTIFICATION_ID    "urn:ietf:params:netconf:capability:notification"
 #define NC_CAP_INTERLEAVE_ID      "urn:ietf:params:netconf:capability:interleave"
 
+#define client_opts nc_client_context_location()->opts
+#define ssh_opts nc_client_context_location()->ssh_opts
+#define ssh_ch_opts nc_client_context_location()->ssh_ch_opts
 
 static void cli_ntf_free_data(void *user_data){
     FILE *output = user_data;
@@ -66,6 +69,9 @@ int netconf_call_home()
     unsigned short port = oru_cont.port;
     int timeout = oru_cont.timeout;
     int ret;
+    const char *pub_key = "/home/nr5glab/.ssh/id_rsa.pub";
+    const char *priv_key = "/home/nr5glab/.ssh/id_rsa";
+
 
     /* default user */
     if (!user) {
@@ -90,6 +96,11 @@ int netconf_call_home()
         timeout = CLI_CH_TIMEOUT;
     }
 
+    /* Set the SSH public and private keys */
+    ret = nc_client_ssh_ch_add_keypair(pub_key, priv_key);
+    if (ret!=0){
+	    printf("[%s] Failed to add keypairs\n", __func__);
+    }
     /* create the session */
     nc_client_ssh_ch_set_username(user);
     nc_client_ssh_ch_add_bind_listen(host, port);
@@ -161,7 +172,8 @@ int netconf_get(){
     // oru_controller_t *oru_cont = (oru_controller_t *)arg;
     int c, config_fd, ret = EXIT_FAILURE, filter_param = 0, timeout = CLI_RPC_REPLY_TIMEOUT;
     struct stat config_stat;
-    char *filter = "/o-ran-sync:sync/sync-status/sync-state";
+    // char *filter = "/o-ran-sync:sync/sync-status/sync-state";
+    char *filter = NULL; 
     char *config_m = NULL;
     struct nc_rpc *rpc;
     NC_WD_MODE wd = NC_WD_UNKNOWN;
