@@ -1,0 +1,119 @@
+<netconf xmlns="urn:ietf:params:xml:ns:netmod:notification">
+  <streams>
+    <stream>
+      <name>NETCONF</name>
+      <description>Default NETCONF stream containing notifications from all the modules. Replays only notifications for modules (streams) that support replay.</description>
+      <replaySupport>true</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-yang-library</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-netconf-notifications</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>nc-notifications</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-keystore</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-truststore</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-network-instance</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-subscribed-notifications</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-yang-push</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>ietf-hardware</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-ald-port</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-externalio</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-fm</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-supervision</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-sync</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-antenna-calibration</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-file-management</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-uplane-conf</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-performance-management</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-software-management</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-trace</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-troubleshooting</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+    <stream>
+      <name>o-ran-beamforming</name>
+      <description>Stream with all the notifications of a module.</description>
+      <replaySupport>false</replaySupport>
+    </stream>
+  </streams>
+</netconf>

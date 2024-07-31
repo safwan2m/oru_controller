@@ -36,6 +36,7 @@ static void print_val(const sr_val_t *value) {
 
 int main(int argc, char **argv) {
     char *user = "root";
+    char *stream = "o-ran-sync";
 
     // oru_cont = (oru_controller_t *)malloc(sizeof(oru_controller_t));
     
@@ -55,7 +56,7 @@ int main(int argc, char **argv) {
 
     netconf_get();
 
-    netconf_subscribe();
+    netconf_subscribe(stream);
     // netconf_subscribet);
     signal(SIGINT, sigint_handler);
     signal(SIGPIPE, SIG_IGN);

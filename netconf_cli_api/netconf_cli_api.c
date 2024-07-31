@@ -211,13 +211,14 @@ fail:
     return ret;
 }
 
-int netconf_subscribe(){
+int netconf_subscribe(char *sub_stream){
     // oru_controller_t *oru_cont = (oru_controller_t *)arg;
 
     int c, config_fd, ret = EXIT_FAILURE, filter_param = 0, timeout = CLI_RPC_REPLY_TIMEOUT;
     struct stat config_stat;
     char *filter = NULL, *config_m = NULL, *start = NULL, *stop = NULL;
-    const char *stream = "o-ran-sync";
+    // const char *stream = sub_stream;
+    const char *stream = NULL;
     struct nc_rpc *rpc = NULL;
     time_t t;
     FILE *output = NULL;
