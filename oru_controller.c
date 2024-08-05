@@ -35,6 +35,8 @@ static void print_val(const sr_val_t *value) {
 }
 
 int main(int argc, char **argv) {
+
+    printf("Starting O-RU controller program\n");
     char *user = "root";
     char *stream = "o-ran-sync";
 
