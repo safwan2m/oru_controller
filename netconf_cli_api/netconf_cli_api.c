@@ -1,5 +1,307 @@
 #include"netconf_cli_api.h"
 
+enum sync_state{
+    FREERUN,
+    HOLDOVER,
+    LOCKED,
+
+}sync_state_var;
+char old_state[10], new_state[10];
+
+struct arglist {
+    char **list;
+    int count;
+    int size;
+};
+
+static void
+init_arglist(struct arglist *args)
+{
+    if (args != NULL) {
+        args->list = NULL;
+        args->count = 0;
+        args->size = 0;
+    }
+}
+
+static void
+clear_arglist(struct arglist *args)
+{
+    int i = 0;
+
+    if (args && args->list) {
+        for (i = 0; i < args->count; i++) {
+            if (args->list[i]) {
+                free(args->list[i]);
+            }
+        }
+        free(args->list);
+    }
+
+    init_arglist(args);
+}
+
+static int
+addargs(struct arglist *args, char *format, ...)
+{
+    va_list arguments;
+    char *aux = NULL, *aux1 = NULL, *prev_aux, quot;
+    int spaces;
+
+    if (args == NULL) {
+        return EXIT_FAILURE;
+    }
+
+    /* store arguments to aux string */
+    va_start(arguments, format);
+    if (vasprintf(&aux, format, arguments) == -1) {
+        va_end(arguments);
+        ERROR(__func__, "vasprintf() failed (%s)", strerror(errno));
+        return EXIT_FAILURE;
+    }
+    va_end(arguments);
+
+    /* remember the begining of the aux string to free it after operations */
+    aux1 = aux;
+
+    /*
+     * get word by word from given string and store words separately into
+     * the arglist
+     */
+    prev_aux = NULL;
+    quot = 0;
+    for (aux = strtok(aux, " \n\t"); aux; prev_aux = aux, aux = strtok(NULL, " \n\t")) {
+        if (!strcmp(aux, "")) {
+            continue;
+        }
+
+        if (!args->list) { /* initial memory allocation */
+            if ((args->list = (char **)malloc(8 * sizeof(char *))) == NULL) {
+                ERROR(__func__, "Memory allocation failed (%s:%d)", __FILE__, __LINE__);
+                return EXIT_FAILURE;
+            }
+            args->size = 8;
+            args->count = 0;
+        } else if (!quot && (args->count + 2 >= args->size)) {
+            /*
+             * list is too short to add next to word so we have to
+             * extend it
+             */
+            args->size += 8;
+            args->list = realloc(args->list, args->size * sizeof(char *));
+        }
+
+        if (!quot) {
+            /* add word at the end of the list */
+            if ((args->list[args->count] = malloc((strlen(aux) + 1) * sizeof(char))) == NULL) {
+                ERROR(__func__, "Memory allocation failed (%s:%d)", __FILE__, __LINE__);
+                return EXIT_FAILURE;
+            }
+
+            /* quoted argument */
+            if ((aux[0] == '\'') || (aux[0] == '\"')) {
+                quot = aux[0];
+                ++aux;
+                /* ...but without spaces */
+                if (aux[strlen(aux) - 1] == quot) {
+                    quot = 0;
+                    aux[strlen(aux) - 1] = '\0';
+                }
+            }
+
+            strcpy(args->list[args->count], aux);
+            args->list[++args->count] = NULL; /* last argument */
+        } else {
+            /* append another part of the argument */
+            spaces = aux - (prev_aux + strlen(prev_aux));
+            args->list[args->count - 1] = realloc(args->list[args->count - 1],
+                    strlen(args->list[args->count - 1]) + spaces + strlen(aux) + 1);
+
+            /* end of quoted argument */
+            if (aux[strlen(aux) - 1] == quot) {
+                quot = 0;
+                aux[strlen(aux) - 1] = '\0';
+            }
+
+            sprintf(args->list[args->count - 1] + strlen(args->list[args->count - 1]), "%*s%s", spaces, " ", aux);
+        }
+    }
+
+    /* clean up */
+    free(aux1);
+
+    return EXIT_SUCCESS;
+}
+
+static char *
+trim_top_elem(char *data, const char *top_elem, const char *top_elem_ns)
+{
+    char *ptr, *prefix = NULL, *buf;
+    int pref_len = 0, state = 0, quote, rc;
+
+    /* state: -2 - syntax error,
+     *        -1 - top_elem not found,
+     *        0 - start,
+     *        1 - parsing prefix,
+     *        2 - prefix just parsed,
+     *        3 - top-elem found and parsed, looking for namespace,
+     *        4 - top_elem and top_elem_ns found (success)
+     */
+
+    if (!data) {
+        return NULL;
+    }
+
+    while (isspace(data[0])) {
+        ++data;
+    }
+
+    if (data[0] != '<') {
+        return data;
+    }
+
+    for (ptr = data + 1; (ptr[0] != '\0') && (ptr[0] != '>'); ++ptr) {
+        switch (state) {
+        case 0:
+            if (!strncmp(ptr, top_elem, strlen(top_elem))) {
+                state = 3;
+                ptr += strlen(top_elem);
+            } else if ((ptr[0] != ':') && !isdigit(ptr[0])) {
+                state = 1;
+                prefix = ptr;
+                pref_len = 1;
+            } else {
+                state = -1;
+            }
+            break;
+        case 1:
+            if (ptr[0] == ':') {
+                /* prefix parsed */
+                state = 2;
+            } else if (ptr[0] != ' ') {
+                ++pref_len;
+            } else {
+                state = -1;
+            }
+            break;
+        case 2:
+            if (!strncmp(ptr, top_elem, strlen(top_elem))) {
+                state = 3;
+                ptr += strlen(top_elem);
+            } else {
+                state = -1;
+            }
+            break;
+        case 3:
+            if (!strncmp(ptr, "xmlns", 5)) {
+                ptr += 5;
+                if (prefix) {
+                    if ((ptr[0] != ':') || strncmp(ptr + 1, prefix, pref_len) || (ptr[1 + pref_len] != '=')) {
+                        /* it's not the right prefix, look further */
+                        break;
+                    }
+                    /* we found our prefix, does the namespace match? */
+                    ptr += 1 + pref_len;
+                }
+
+                if (ptr[0] != '=') {
+                    if (prefix) {
+                        /* fail for sure */
+                        state = -1;
+                    } else {
+                        /* it may not be xmlns attribute, but something longer... */
+                    }
+                    break;
+                }
+                ++ptr;
+
+                if ((ptr[0] != '\"') && (ptr[0] != '\'')) {
+                    state = -2;
+                    break;
+                }
+                quote = ptr[0];
+                ++ptr;
+
+                if (strncmp(ptr, top_elem_ns, strlen(top_elem_ns))) {
+                    if (prefix) {
+                        state = -1;
+                    }
+                    break;
+                }
+                ptr += strlen(top_elem_ns);
+
+                if (ptr[0] != quote) {
+                    if (prefix) {
+                        state = -1;
+                    }
+                    break;
+                }
+
+                /* success */
+                ptr = strchrnul(ptr, '>');
+                state = 4;
+            }
+            break;
+        }
+
+        if ((state < 0) || (state == 4)) {
+            break;
+        }
+    }
+
+    if ((state == -2) || (ptr[0] == '\0')) {
+        return NULL;
+    } else if (state != 4) {
+        return data;
+    }
+
+    /* skip the first elem, ... */
+    ++ptr;
+    while (isspace(ptr[0])) {
+        ++ptr;
+    }
+    data = ptr;
+
+    /* ... but also its ending tag */
+    if (prefix) {
+        rc = asprintf(&buf, "</%.*s:%s>", pref_len, prefix, top_elem);
+    } else {
+        rc = asprintf(&buf, "</%s>", top_elem);
+    }
+    if (rc == -1) {
+        return NULL;
+    }
+
+    ptr = strstr(data, buf);
+
+    if (!ptr) {
+        /* syntax error */
+        free(buf);
+        return NULL;
+    } else {
+        /* reuse it */
+        prefix = ptr;
+    }
+    ptr += strlen(buf);
+    free(buf);
+
+    while (isspace(ptr[0])) {
+        ++ptr;
+    }
+    if (ptr[0] != '\0') {
+        /* there should be nothing more */
+        return NULL;
+    }
+
+    /* ending tag and all syntax seems fine, so cut off the ending tag */
+    while (isspace(prefix[-1]) && (prefix > data)) {
+        --prefix;
+    }
+    prefix[0] = '\0';
+
+    return data;
+}
+
 extern struct nc_session *session;
 extern LYD_FORMAT output_format;
 extern uint32_t output_flag;
@@ -44,9 +346,27 @@ static void cli_ntf_clb(struct nc_session *UNUSED(session), const struct lyd_nod
         }
     }
 
-    fprintf(output, "notification (%s)\n", ((struct lyd_node_opaq *)lyd_child(envp))->value);
-    lyd_print_file(output, op, output_format, LYD_PRINT_WITHSIBLINGS | output_flag);
-    fprintf(output, "\n");
+    struct lyd_node *node;
+    if(strcmp(op->schema->name,"synchronization-state-change") == 0){
+        LY_LIST_FOR(lyd_child(op), node) {
+            if (strcmp(node->schema->name, "sync-state") == 0) {
+                const char *sync_state_value = lyd_get_value(node);
+                printf("sync-state value: %s\n", sync_state_value);
+                if(strcmp(sync_state_value, "LOCKED") == 0){
+                    printf("---------> Activating the carrier\n");
+                    netconf_edit_config("activate-carrier.xml");
+                }
+                else if ((strcmp(sync_state_value, "FREERUN") == 0) || (strcmp(sync_state_value, "HOLDOVER") == 0)){
+                    printf("---------> Deactivating the carrier\n");
+                    netconf_edit_config("deactivate-carrier.xml");
+                }
+                break;
+            }
+        }
+    }
+    // fprintf(output, "notification (%s)\n", ((struct lyd_node_opaq *)lyd_child(envp))->value);
+    // lyd_print_file(output, op, output_format, LYD_PRINT_WITHSIBLINGS | output_flag);
+    // fprintf(output, "\n");
     fflush(output);
 
     if ((output == stdout) && was_rawmode) {
@@ -222,7 +542,6 @@ int netconf_subscribe(char *sub_stream){
     struct nc_rpc *rpc = NULL;
     time_t t;
     FILE *output = NULL;
-    int option_index = 0;
 
     char *tmp_config_file = "notifications <create-subscription> operation";
 
@@ -280,5 +599,82 @@ fail:
     free(stop);
     nc_rpc_free(rpc);
 
+    return ret;
+}
+
+int netconf_edit_config(const char *arg){
+        int c, config_fd, ret = EXIT_FAILURE, content_param = 0, timeout = CLI_RPC_REPLY_TIMEOUT;
+    struct stat config_stat;
+    char *content = NULL, *config_m = NULL, *cont_start;
+    NC_DATASTORE target = NC_DATASTORE_ERROR;
+    struct nc_rpc *rpc;
+    NC_RPC_EDIT_DFLTOP op = NC_RPC_EDIT_DFLTOP_UNKNOWN;
+    NC_RPC_EDIT_TESTOPT test = NC_RPC_EDIT_TESTOPT_UNKNOWN;
+    NC_RPC_EDIT_ERROPT err = NC_RPC_EDIT_ERROPT_UNKNOWN;
+
+    /* set back to start to be able to use getopt() repeatedly */
+    optind = 0;
+
+    target = NC_DATASTORE_RUNNING;
+    op = NC_RPC_EDIT_DFLTOP_REPLACE;
+     if (arg) {
+        /* open edit configuration data from the file */
+        config_fd = open(arg, O_RDONLY);
+        if (config_fd == -1) {
+            ERROR(__func__, "Unable to open the local datastore file \"%s\" (%s).", arg, strerror(errno));
+            goto fail;
+        }
+
+        /* map content of the file into the memory */
+        if (fstat(config_fd, &config_stat) != 0) {
+            ERROR(__func__, "fstat failed (%s).", strerror(errno));
+            close(config_fd);
+            goto fail;
+        }
+        config_m = mmap(NULL, config_stat.st_size, PROT_READ, MAP_PRIVATE, config_fd, 0);
+        if (config_m == MAP_FAILED) {
+            ERROR(__func__, "mmap of the local datastore file failed (%s).", strerror(errno));
+            close(config_fd);
+            goto fail;
+        }
+
+        /* make a copy of the content to allow closing the file */
+        content = strdup(config_m);
+
+        /* unmap local datastore file and close it */
+        munmap(config_m, config_stat.st_size);
+        close(config_fd);
+    }
+
+
+    /* check if edit configuration data were specified */
+    if (!content) {
+        /* let user write edit data interactively */
+        // content = readinput("Type the content of the <edit-config>.", *tmp_config_file, tmp_config_file);
+        if (!content) {
+            ERROR(__func__, "Reading configuration data failed.");
+            goto fail;
+        }
+    }
+
+    /* trim top-level element if needed */
+    cont_start = trim_top_elem(content, "config", "urn:ietf:params:xml:ns:netconf:base:1.0");
+    if (!cont_start) {
+        ERROR(__func__, "Provided configuration content is invalid.");
+        goto fail;
+    }
+
+    rpc = nc_rpc_edit(target, op, test, err, cont_start, NC_PARAMTYPE_CONST);
+    if (!rpc) {
+        ERROR(__func__, "RPC creation failed.");
+        goto fail;
+    }
+
+    ret = cli_send_recv(rpc, stdout, 0, timeout);
+
+    nc_rpc_free(rpc);
+
+fail:
+    free(content);
     return ret;
 }
