@@ -1,12 +1,41 @@
 #include"netconf_cli_api.h"
 
+extern volatile int exit_application;
+
+char some_msg[4096];
+
+extern int done;
+LYD_FORMAT output_format = LYD_XML;
+uint32_t output_flag;
+char *config_editor;
+struct nc_session *session;
+volatile int interleave;
+int timed;
+
 enum sync_state{
     FREERUN,
     HOLDOVER,
     LOCKED,
 
 }sync_state_var;
-char old_state[10], new_state[10];
+
+#define NC_CAP_WRITABLERUNNING_ID "urn:ietf:params:netconf:capability:writable-running"
+#define NC_CAP_CANDIDATE_ID       "urn:ietf:params:netconf:capability:candidate"
+#define NC_CAP_CONFIRMEDCOMMIT_ID "urn:ietf:params:netconf:capability:confirmed-commit:1.1"
+#define NC_CAP_ROLLBACK_ID        "urn:ietf:params:netconf:capability:rollback-on-error"
+#define NC_CAP_VALIDATE10_ID      "urn:ietf:params:netconf:capability:validate:1.0"
+#define NC_CAP_VALIDATE11_ID      "urn:ietf:params:netconf:capability:validate:1.1"
+#define NC_CAP_STARTUP_ID         "urn:ietf:params:netconf:capability:startup"
+#define NC_CAP_URL_ID             "urn:ietf:params:netconf:capability:url"
+#define NC_CAP_XPATH_ID           "urn:ietf:params:netconf:capability:xpath"
+#define NC_CAP_WITHDEFAULTS_ID    "urn:ietf:params:netconf:capability:with-defaults"
+#define NC_CAP_NOTIFICATION_ID    "urn:ietf:params:netconf:capability:notification"
+#define NC_CAP_INTERLEAVE_ID      "urn:ietf:params:netconf:capability:interleave"
+
+#define client_opts nc_client_context_location()->opts
+#define ssh_opts nc_client_context_location()->ssh_opts
+#define ssh_ch_opts nc_client_context_location()->ssh_ch_opts
+static int cmd_disconnect(const char *arg, char **tmp_config_file);
 
 struct arglist {
     char **list;
@@ -39,6 +68,252 @@ clear_arglist(struct arglist *args)
     }
 
     init_arglist(args);
+}
+
+static int
+cli_gettimespec(struct timespec *ts, int *mono)
+{
+    errno = 0;
+
+#ifdef CLOCK_MONOTONIC_RAW
+    *mono = 1;
+    return clock_gettime(CLOCK_MONOTONIC_RAW, ts);
+#elif defined (CLOCK_MONOTONIC)
+    *mono = 1;
+    return clock_gettime(CLOCK_MONOTONIC, ts);
+#elif defined (CLOCK_REALTIME)
+    /* no monotonic clock available, return realtime */
+    *mono = 0;
+    return clock_gettime(CLOCK_REALTIME, ts);
+#else
+    *mono = 0;
+
+    int rc;
+    struct timeval tv;
+
+    rc = gettimeofday(&tv, NULL);
+    if (!rc) {
+        ts->tv_sec = (time_t)tv.tv_sec;
+        ts->tv_nsec = 1000L * (long)tv.tv_usec;
+    }
+    return rc;
+#endif
+}
+
+/* returns milliseconds */
+static int32_t
+cli_difftimespec(const struct timespec *ts1, const struct timespec *ts2)
+{
+    int64_t nsec_diff = 0;
+
+    nsec_diff += (((int64_t)ts2->tv_sec) - ((int64_t)ts1->tv_sec)) * 1000000000L;
+    nsec_diff += ((int64_t)ts2->tv_nsec) - ((int64_t)ts1->tv_nsec);
+
+    return nsec_diff ? nsec_diff / 1000000L : 0;
+}
+
+int
+cli_send_recv(struct nc_rpc *rpc, FILE *output, NC_WD_MODE wd_mode, int timeout_s)
+{
+    char *model_data;
+    int ret = 0, mono;
+    int32_t msec;
+    uint32_t ly_wd;
+    uint64_t msgid;
+    struct lyd_node *envp, *op, *err, *node, *info;
+    struct lyd_node_any *any;
+    NC_MSG_TYPE msgtype;
+    struct timespec ts_start, ts_stop;
+
+    if (timed) {
+        ret = cli_gettimespec(&ts_start, &mono);
+        if (ret) {
+            ERROR(__func__, "Getting current time failed (%s).", strerror(errno));
+            return ret;
+        }
+    }
+
+    msgtype = nc_send_rpc(session, rpc, 1000, &msgid);
+    if (msgtype == NC_MSG_ERROR) {
+        ERROR(__func__, "Failed to send the RPC.");
+        if (nc_session_get_status(session) != NC_STATUS_RUNNING) {
+            cmd_disconnect(NULL, NULL);
+        }
+        return -1;
+    } else if (msgtype == NC_MSG_WOULDBLOCK) {
+        ERROR(__func__, "Timeout for sending the RPC expired.");
+        return -1;
+    }
+
+recv_reply:
+    msgtype = nc_recv_reply(session, rpc, msgid, timeout_s * 1000, &envp, &op);
+    if (msgtype == NC_MSG_ERROR) {
+        ERROR(__func__, "Failed to receive a reply.");
+        if (nc_session_get_status(session) != NC_STATUS_RUNNING) {
+            cmd_disconnect(NULL, NULL);
+        }
+        return -1;
+    } else if (msgtype == NC_MSG_WOULDBLOCK) {
+        ERROR(__func__, "Timeout for receiving a reply expired.");
+        return -1;
+    } else if (msgtype == NC_MSG_NOTIF) {
+        /* read again */
+        goto recv_reply;
+    } else if (msgtype == NC_MSG_REPLY_ERR_MSGID) {
+        /* unexpected message, try reading again to get the correct reply */
+        ERROR(__func__, "Unexpected reply received - ignoring and waiting for the correct reply.");
+        lyd_free_tree(envp);
+        lyd_free_tree(op);
+        goto recv_reply;
+    }
+
+    if (timed) {
+        ret = cli_gettimespec(&ts_stop, &mono);
+        if (ret) {
+            ERROR(__func__, "Getting current time failed (%s).", strerror(errno));
+            goto cleanup;
+        }
+    }
+
+    if (op) {
+        /* data reply */
+        if (nc_rpc_get_type(rpc) == NC_RPC_GETSCHEMA) {
+            /* special case */
+            if (!lyd_child(op) || (lyd_child(op)->schema->nodetype != LYS_ANYXML)) {
+                ERROR(__func__, "Unexpected data reply to <get-schema> RPC.");
+                ret = -1;
+                goto cleanup;
+            }
+            if (output == stdout) {
+                fprintf(output, "MODULE\n");
+            }
+            any = (struct lyd_node_any *)lyd_child(op);
+            switch (any->value_type) {
+            case LYD_ANYDATA_STRING:
+            case LYD_ANYDATA_XML:
+                fputs(any->value.str, output);
+                break;
+            case LYD_ANYDATA_DATATREE:
+                lyd_print_mem(&model_data, any->value.tree, LYD_XML, LYD_PRINT_WITHSIBLINGS);
+                fputs(model_data, output);
+                free(model_data);
+                break;
+            default:
+                /* none of the others can appear here */
+                ERROR(__func__, "Unexpected anydata value format.");
+                ret = -1;
+                goto cleanup;
+            }
+
+            if (output == stdout) {
+                fprintf(output, "\n");
+            }
+        } else {
+            /* generic data */
+            if (output == stdout) {
+                fprintf(output, "DATA\n");
+            }
+
+            switch (wd_mode) {
+            case NC_WD_ALL:
+                ly_wd = LYD_PRINT_WD_ALL;
+                break;
+            case NC_WD_ALL_TAG:
+                ly_wd = LYD_PRINT_WD_ALL_TAG;
+                break;
+            case NC_WD_TRIM:
+                ly_wd = LYD_PRINT_WD_TRIM;
+                break;
+            case NC_WD_EXPLICIT:
+                ly_wd = LYD_PRINT_WD_EXPLICIT;
+                break;
+            default:
+                ly_wd = 0;
+                break;
+            }
+
+            lyd_print_file(output, lyd_child(op), output_format, LYD_PRINT_WITHSIBLINGS | ly_wd | output_flag);
+            if (output == stdout) {
+                fprintf(output, "\n");
+            }
+
+
+            printf("op->schema->name is %s\n",op->schema->name);
+            struct lyd_node *node = lyd_child(op);
+            printf("node->schema->name is %s\n", node->schema->name);
+            lyd_print_file(output, op, output_format, LYD_PRINT_WITHSIBLINGS | ly_wd | output_flag);
+
+            LY_LIST_FOR(lyd_child(op), node) {
+                printf("iterated ... %s\n", node->schema->name);
+                if (strcmp(node->schema->name, "sync-state") == 0) {
+                    printf("sync-state is unknown\n");
+                }
+            }
+            
+            const char *xml_content = lyd_get_value(node);
+            printf("value is \n %s\n",xml_content);
+        }
+    } else if (!strcmp(LYD_NAME(lyd_child(envp)), "ok")) {
+        /* ok reply */
+        fprintf(output, "OK\n");
+    } else {
+        assert(!strcmp(LYD_NAME(lyd_child(envp)), "rpc-error"));
+
+        fprintf(output, "ERROR\n");
+        LY_LIST_FOR(lyd_child(envp), err) {
+            lyd_find_sibling_opaq_next(lyd_child(err), "error-type", &node);
+            if (node) {
+                fprintf(output, "\ttype:     %s\n", ((struct lyd_node_opaq *)node)->value);
+            }
+            lyd_find_sibling_opaq_next(lyd_child(err), "error-tag", &node);
+            if (node) {
+                fprintf(output, "\ttag:      %s\n", ((struct lyd_node_opaq *)node)->value);
+            }
+            lyd_find_sibling_opaq_next(lyd_child(err), "error-severity", &node);
+            if (node) {
+                fprintf(output, "\tseverity: %s\n", ((struct lyd_node_opaq *)node)->value);
+            }
+            lyd_find_sibling_opaq_next(lyd_child(err), "error-app-tag", &node);
+            if (node) {
+                fprintf(output, "\tapp-tag:  %s\n", ((struct lyd_node_opaq *)node)->value);
+            }
+            lyd_find_sibling_opaq_next(lyd_child(err), "error-path", &node);
+            if (node) {
+                fprintf(output, "\tpath:     %s\n", ((struct lyd_node_opaq *)node)->value);
+            }
+            lyd_find_sibling_opaq_next(lyd_child(err), "error-message", &node);
+            if (node) {
+                fprintf(output, "\tmessage:  %s\n", ((struct lyd_node_opaq *)node)->value);
+            }
+
+            info = lyd_child(err);
+            while (!lyd_find_sibling_opaq_next(info, "error-info", &info)) {
+                fprintf(output, "\tinfo:\n");
+                lyd_print_file(stdout, lyd_child(info), LYD_XML, LYD_PRINT_WITHSIBLINGS);
+
+                info = info->next;
+            }
+            fprintf(output, "\n");
+        }
+        ret = 1;
+    }
+
+    if (msgtype == NC_MSG_REPLY_ERR_MSGID) {
+        ERROR(__func__, "Trying to receive another message...\n");
+        lyd_free_tree(envp);
+        lyd_free_tree(op);
+        goto recv_reply;
+    }
+
+    if (timed) {
+        msec = cli_difftimespec(&ts_start, &ts_stop);
+        fprintf(output, "%s %2dm%d.%03ds\n", mono ? "mono" : "real", msec / 60000, (msec % 60000) / 1000, msec % 1000);
+    }
+
+cleanup:
+    lyd_free_tree(envp);
+    lyd_free_tree(op);
+    return ret;
 }
 
 static int
@@ -302,28 +577,6 @@ trim_top_elem(char *data, const char *top_elem, const char *top_elem_ns)
     return data;
 }
 
-extern struct nc_session *session;
-extern LYD_FORMAT output_format;
-extern uint32_t output_flag;
-extern volatile int interleave;
-
-#define NC_CAP_WRITABLERUNNING_ID "urn:ietf:params:netconf:capability:writable-running"
-#define NC_CAP_CANDIDATE_ID       "urn:ietf:params:netconf:capability:candidate"
-#define NC_CAP_CONFIRMEDCOMMIT_ID "urn:ietf:params:netconf:capability:confirmed-commit:1.1"
-#define NC_CAP_ROLLBACK_ID        "urn:ietf:params:netconf:capability:rollback-on-error"
-#define NC_CAP_VALIDATE10_ID      "urn:ietf:params:netconf:capability:validate:1.0"
-#define NC_CAP_VALIDATE11_ID      "urn:ietf:params:netconf:capability:validate:1.1"
-#define NC_CAP_STARTUP_ID         "urn:ietf:params:netconf:capability:startup"
-#define NC_CAP_URL_ID             "urn:ietf:params:netconf:capability:url"
-#define NC_CAP_XPATH_ID           "urn:ietf:params:netconf:capability:xpath"
-#define NC_CAP_WITHDEFAULTS_ID    "urn:ietf:params:netconf:capability:with-defaults"
-#define NC_CAP_NOTIFICATION_ID    "urn:ietf:params:netconf:capability:notification"
-#define NC_CAP_INTERLEAVE_ID      "urn:ietf:params:netconf:capability:interleave"
-
-#define client_opts nc_client_context_location()->opts
-#define ssh_opts nc_client_context_location()->ssh_opts
-#define ssh_ch_opts nc_client_context_location()->ssh_ch_opts
-
 static void cli_ntf_free_data(void *user_data){
     FILE *output = user_data;
 
@@ -355,11 +608,12 @@ static void cli_ntf_clb(struct nc_session *UNUSED(session), const struct lyd_nod
                 if(strcmp(sync_state_value, "LOCKED") == 0){
                     printf("---------> Activating the carrier\n");
                     netconf_edit_config("activate-carrier.xml");
+                    exit_application = 1;
                 }
-                else if ((strcmp(sync_state_value, "FREERUN") == 0) || (strcmp(sync_state_value, "HOLDOVER") == 0)){
-                    printf("---------> Deactivating the carrier\n");
-                    netconf_edit_config("deactivate-carrier.xml");
-                }
+                // else if ((strcmp(sync_state_value, "FREERUN") == 0) || (strcmp(sync_state_value, "HOLDOVER") == 0)){
+                //     printf("---------> Deactivating the carrier\n");
+                //     netconf_edit_config("deactivate-carrier.xml");
+                // }
                 break;
             }
         }
@@ -377,6 +631,15 @@ static void cli_ntf_clb(struct nc_session *UNUSED(session), const struct lyd_nod
     if (!strcmp(op->schema->name, "notificationComplete") && !strcmp(op->schema->module->name, "nc-notifications")) {
         interleave = 1;
     }
+}
+
+int my_auth_hostkey_check(const char *hostname, ssh_session session, void *priv)
+{
+  (void)hostname;
+  (void)session;
+  (void)priv;
+
+  return 0;
 }
 
 int netconf_call_home()
@@ -424,6 +687,9 @@ int netconf_call_home()
     /* create the session */
     nc_client_ssh_ch_set_username(user);
     nc_client_ssh_ch_add_bind_listen(host, port);
+
+    nc_client_ssh_ch_set_auth_hostkey_check_clb(my_auth_hostkey_check, "DATA");  // host-key identification
+    
     printf("Waiting %ds for an SSH Call Home connection on port %u with username %s...\n", timeout, port, user);
     ret = nc_accept_callhome(timeout * 1000, NULL, &session);
     nc_client_ssh_ch_del_bind(host, port);
@@ -493,7 +759,8 @@ int netconf_get(){
     int c, config_fd, ret = EXIT_FAILURE, filter_param = 0, timeout = CLI_RPC_REPLY_TIMEOUT;
     struct stat config_stat;
     // char *filter = "/o-ran-sync:sync/sync-status/sync-state";
-    char *filter = NULL; 
+    char *filter = "/o-ran-sync:sync/sync-status";
+    // char *filter = NULL; 
     char *config_m = NULL;
     struct nc_rpc *rpc;
     NC_WD_MODE wd = NC_WD_UNKNOWN;
@@ -503,16 +770,6 @@ int netconf_get(){
     if (!session) {
         ERROR(__func__, "Not connected to a NETCONF server, no RPCs can be sent.");
         goto fail;
-    }
-
-    /* check if edit configuration data were specified */
-    if (filter_param && !filter) {
-        /* let user write edit data interactively */
-        filter = readinput("Type the content of the subtree filter.", *tmp_config_file, tmp_config_file);
-        if (!filter) {
-            ERROR(__func__, "Reading filter data failed.");
-            goto fail;
-        }
     }
 
     /* create requests */
@@ -548,16 +805,6 @@ int netconf_subscribe(char *sub_stream){
     if (!session) {
         ERROR(__func__, "Not connected to a NETCONF server, no RPCs can be sent.");
         goto fail;
-    }
-
-    /* check if edit configuration data were specified */
-    if (filter_param && !filter) {
-        /* let user write edit data interactively */
-        filter = readinput("Type the content of the subtree filter.", *tmp_config_file, tmp_config_file);
-        if (!filter) {
-            ERROR(__func__, "Reading filter data failed.");
-            goto fail;
-        }
     }
 
     /* create requests */
@@ -649,8 +896,6 @@ int netconf_edit_config(const char *arg){
 
     /* check if edit configuration data were specified */
     if (!content) {
-        /* let user write edit data interactively */
-        // content = readinput("Type the content of the <edit-config>.", *tmp_config_file, tmp_config_file);
         if (!content) {
             ERROR(__func__, "Reading configuration data failed.");
             goto fail;
@@ -677,4 +922,17 @@ int netconf_edit_config(const char *arg){
 fail:
     free(content);
     return ret;
+}
+
+static int
+cmd_disconnect(const char *UNUSED(arg), char **UNUSED(tmp_config_file))
+{
+    if (session == NULL) {
+        ERROR("disconnect", "Not connected to any NETCONF server.");
+    } else {
+        nc_session_free(session, NULL);
+        session = NULL;
+    }
+
+    return EXIT_SUCCESS;
 }

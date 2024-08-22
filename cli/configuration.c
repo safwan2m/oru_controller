@@ -34,7 +34,6 @@
 #define eaccess access
 #endif
 
-#include "commands.h"
 #include "compat.h"
 #include "configuration.h"
 #include "linenoise/linenoise.h"
